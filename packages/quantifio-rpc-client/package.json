@@ -1,0 +1,12 @@
+{
+  "name": "quantifio-rpc-client",
+  "version": "1.0.0",
+  "description": "Client module for quantifio-rpc",
+  "main": "dist/index.js",
+  "author": "Turning Data Into Products",
+  "license": "BSD-3-Clause",
+  "dependencies": {
+    "quantifio-proxy": "^1.0.0",
+    "uuid": "^3.1.0"
+  }
+}

@@ -31,6 +31,7 @@
                 "/usr/local/include",
                 "/usr/include",
                 "${workspaceRoot}",
+                "${workspaceRoot}/packages/quantifio-proxy/modules/SocketIO/src",
                 "${workspaceRoot}/node_modules/nan",
                 "/usr/include/node",
                 "/usr/include/linux"
@@ -53,7 +54,11 @@
             "name": "Win32",
             "includePath": [
                 "C:/Program Files (x86)/Microsoft Visual Studio 14.0/VC/include",
-                "${workspaceRoot}"
+                "${workspaceRoot}/packages/quantifio-proxy/src",
+                "${workspaceRoot}/node_modules/nan",
+                "C:/Users/susid/.node-gyp/8.8.1/include/node",
+                "C:/Users/susid/.node-gyp/8.8.1/deps/uv/include",
+                "C:/Users/susid/.node-gyp/8.8.1/deps/v8/include"
             ],
             "defines": [
                 "_DEBUG",

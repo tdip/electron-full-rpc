@@ -1,4 +1,5 @@
 {
+  "private": true,
   "name": "electron-full-rpc",
   "version": "1.0.0",
   "description": "RPC calls for the various electron processes plus support for threads in the main process.",
@@ -6,6 +7,17 @@
   "author": "Turning Data Into Products A.S.",
   "license": "BSD-3-Clause",
   "dependencies": {
-    "nan": "^2.7.0"
-  }
+    "bindings": "^1.3.0",
+    "boost-lib": "^0.11.3",
+    "cmake-js": "^3.5.0",
+    "immutable": "4.0.0-rc.2",
+    "nan": "^2.7.0",
+    "quantifio-proxy": "^1.0.0",
+    "quantifio-rpc-client": "^1.0.0",
+    "socket.io": "^2.0.4",
+    "uuid": "^3.1.0"
+  },
+  "workspaces": [
+    "packages/*"
+  ]
 }

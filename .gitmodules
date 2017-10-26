@@ -1,0 +1,3 @@
+[submodule "packages/quantifio-proxy/modules/SocketIO"]
+	path = packages/quantifio-proxy/modules/SocketIO
+	url = https://github.com/socketio/socket.io-client-cpp.git

@@ -1,98 +1,64 @@
-#include "RpcHandler.h";
+#include "RpcHandler.h"
 
+#include <memory>
 #include <nan.h>
-#include <pthread.h>
-#include <stdio.h>
-#include <unistd.h>
+#include <node.h>
+#include <sstream>
+#include <thread>
 #include <v8.h>
 
+#include "sio_client.h"
+#include "sio_socket.h"
+
+#include "errors/RpcError.h"
+
+#include "messages/DataSegmentMessage.h"
+#include "messages/RpcRemoteMethodCall.h"
+
+#include "ILogger.h"
+#include "utils.h"
+
 Nan::Persistent<v8::Function> RpcHandler::constructor;
+Nan::Persistent<v8::Function> RpcHandler::RpcChannelConstructor;
+Nan::Persistent<v8::Function> RpcRemoteMethodChannelConstructor;
 
-NAN_METHOD(Notify){
+class DebugLogger : public ILogger{
+public:
+    DebugLogger(): ILogger(){}
 
-    auto messageObj = info[0];
-    if(!messageObj->IsString()){
-        return;
-    }
-    usleep(1000000);
-    auto message = messageObj->ToString();
-    auto isolate = info.GetIsolate();
-    RpcHandler* rpc = Nan::GetIsolateData<RpcHandler>(isolate);
-    char messageVals[message->Utf8Length()];
-    message->WriteUtf8(messageVals);
-    rpc->PushMessage(messageVals);
-}
-
-std::shared_ptr<std::string> RpcHandler::PopMessage(){
-    std::shared_ptr<std::string> result;
-    while(true){
-        pthread_mutex_lock(&this->mutex);
-        if(this->messages.size() > 0){
-            result = this->messages.front();
-            this->messages.erase(this->messages.begin());
-            break;
-        }
-        pthread_mutex_unlock(&this->mutex);
-        usleep(1000);
+    void Warn(const char* tag, const char* message) override{
+        printf("Warn '%s': %s \n", tag, message);
     }
 
-    return result;
+    void Error(const char* tag, const char* message) override{
+        printf("Error '%s': %s\n", tag, message);
+    }    
+};
+
+NAN_METHOD(CloseDispatcher){
 }
 
-void RpcHandler::PushMessage(char* message){
-    pthread_mutex_lock(&this->mutex);
-    this->messages.push_back(std::make_shared<std::string>(message));
-    pthread_mutex_unlock(&this->mutex);
+RpcHandler::RpcHandler(int32_t port) :
+    port(port){
+    this->dataChannels = std::make_shared<RpcChannelManager<DataSegmentMessage>>();
+    this->logger = std::make_shared<DebugLogger>();
+    this->outgoingMessages = std::make_shared<RpcChannel<sio::message>>();
+    this->dispatcher = std::make_shared<RpcDispatcher>(
+        new Nan::Callback(Nan::New<v8::Function>(CloseDispatcher)),
+        this
+    );
+    Nan::AsyncQueueWorker(this->dispatcher.get());
+ }
+
+ RpcHandler::~RpcHandler(){
+
+    // Notify the Socket.IO client that it should
+    // stop listening.
+     this->outgoingMessages->SetDone();
 }
 
-static void* messageDispatcher(void* args){
-
-    // Create an isolated context for the
-    // dispatcher thread
-    v8::Isolate::CreateParams params;
-    params.array_buffer_allocator = v8::ArrayBuffer::Allocator::NewDefaultAllocator();
-    v8::Isolate* isolate = v8::Isolate::New(params);
-    
-    v8::Locker wtf(isolate);
-    
-    v8::Isolate::Scope isolate_scope(isolate);
-    v8::HandleScope handle_scope(isolate);
-    v8::Local<v8::Context> context = v8::Context::New(isolate);
-    v8::Context::Scope context_scope(context);
-
-    RpcHandler* rpc = (RpcHandler*) args;
-
-    FILE* fp = fopen(rpc->supportModule->c_str(), "rb");
-    fseek(fp, 0, SEEK_END);    
-    long len = ftell(fp);
-    rewind(fp);
-    char* buf = (char*) calloc(len + 1, sizeof(char));
-    fread(buf, len, 1, fp);
-    fclose(fp);
-
-    v8::Local<v8::Value> result = v8::Script::Compile(v8::String::NewFromUtf8(isolate, buf))->Run();
-    free(buf);
-    auto dispatch = context->Global()->Get(v8::String::NewFromUtf8(isolate, "dispatcher"));
-
-    if(!dispatch->IsFunction()){
-        auto obj = dispatch->ToDetailString()->ToString();
-        char details [obj->Utf8Length()];
-        obj->WriteUtf8(details);
-        char * test = details;
-        pthread_mutex_lock(&rpc->mutex);
-        rpc->error = std::make_shared<std::string>("The dispatcher script must define a global function called 'dispatcher'.");
-        pthread_mutex_unlock(&rpc->mutex);
-        return NULL;
-    }
-
-    Nan::SetIsolateData(isolate, rpc);
-    v8::Local<v8::Object> notifier = Nan::New<v8::Object>();
-    Nan::SetMethod(notifier, "notify", Notify);
-
-    v8::Local<v8::Value> argv[0];
-    Nan::To<v8::Function>(dispatch).ToLocalChecked()->Call(notifier, 0, argv);
-
-    return NULL;
+int32_t RpcHandler::GetPort(){
+    return this->port;
 }
 
 NAN_METHOD(RpcHandler::New){
@@ -100,19 +66,16 @@ NAN_METHOD(RpcHandler::New){
     auto supportModule = info[0];
     v8::Local<v8::Script> script = v8::Script::Compile(v8::String::NewFromUtf8(isolate, "console.log('kaisi')"));
     
-    if(supportModule->IsUndefined() || !supportModule->IsString()){
-        Nan::ThrowError(v8::String::NewFromUtf8(isolate, "Constructor requires one argument"));
+    if(supportModule->IsUndefined() || !supportModule->IsNumber()){
+        Nan::ThrowError(v8::String::NewFromUtf8(isolate, "Constructor requires one number argument"));
     }
 
     if(info.IsConstructCall()){
         
-        auto supportString = supportModule->ToString();
-        char string[supportString->Utf8Length()];
-        supportString->WriteUtf8(string);
+        int32_t port = supportModule->ToNumber()->Uint32Value();
 
-        auto obj = new RpcHandler(string);
-        
-        pthread_create(&obj->thread, NULL, messageDispatcher, obj);
+        auto obj = new RpcHandler(port);
+                
         obj->Wrap(info.This());
         info.GetReturnValue().Set(info.This());
         return;
@@ -121,10 +84,53 @@ NAN_METHOD(RpcHandler::New){
     Nan::ThrowError(v8::String::NewFromUtf8(isolate, "The 'RpcHandler' must be used with the new keyword"));
 }
 
-NAN_METHOD(RpcHandler::CallRemoteMethod){
+NAN_METHOD(RpcHandler::EmitRpcCall){
     RpcHandler* rpc = ObjectWrap::Unwrap<RpcHandler>(info.Holder());
-    auto message = rpc->PopMessage();
-    info.GetReturnValue().Set(v8::String::NewFromUtf8(info.GetIsolate(), message->c_str()));
+    auto rpcMethodCallMessage = utils::node::to<v8::Object>(info[0]);
+
+    if(rpcMethodCallMessage.IsEmpty()){
+        Nan::ThrowError(Nan::Error("'EmitRpcCall' requires an 'RpcMethodCallMessage' as first argument."));
+    }
+
+    try{
+        auto message = RpcRemoteMethodCall::Encode(rpcMethodCallMessage.ToLocalChecked());
+        rpc->outgoingMessages->PushMessage(message);
+        info.GetReturnValue().SetUndefined();
+    }catch(RpcError& error){
+        Nan::ThrowError(Nan::Error(error.what()));
+    }
+}
+
+NAN_METHOD(RpcHandler::GetData){
+
+    auto iso = info.GetIsolate();
+    // Check that a channelId  is given so we can know what channel we should
+    // listen to.
+    auto channelId = info[0];
+    if(!channelId->IsString()){
+        Nan::ThrowError(Nan::TypeError("'GetData' requires a string on it's first argument."));
+    }
+
+    v8::Local<v8::Value> args[2] = { info.Holder(), channelId };
+    auto result = Nan::CallAsConstructor(RpcHandler::RpcChannelConstructor.Get(iso), 2, args)
+        .ToLocalChecked();
+    info.GetReturnValue().Set(result);
+}
+
+NAN_METHOD(RpcHandler::EmitData){
+    RpcHandler* rpc = Nan::ObjectWrap::Unwrap<RpcHandler>(info.Holder());
+    auto data = utils::node::to<v8::Object>(info[0]);
+    if(data.IsEmpty()){
+        Nan::ThrowError(Nan::Error("Emit data requires its first argument to be an object"));
+    }
+
+    try{
+        auto message = DataSegmentMessage::Encode(data.ToLocalChecked());
+        rpc->outgoingMessages->PushMessage(message);
+        info.GetReturnValue().SetUndefined();
+    }catch(RpcError& error){
+        Nan::ThrowError(Nan::Error(error.what()));
+    }
 }
 
 NAN_METHOD(RpcHandler::GetStatus){
@@ -140,17 +146,70 @@ NAN_METHOD(RpcHandler::GetStatus){
 
 NAN_MODULE_INIT(RpcHandler::Init){
     
-    Nan::HandleScope scope;    
+    Nan::HandleScope scope;
+
+    // Define the constants exposed by this module
+    v8::Local<v8::Object> constants = Nan::New<v8::Object>();
+
+    Nan::Set(
+        constants,
+        Nan::New<v8::String>("RpcServerEvent").ToLocalChecked(),
+        Nan::New<v8::String>(RPC_SERVER_EVENT_NAME).ToLocalChecked());
+
+    Nan::Set(
+        constants,
+        Nan::New<v8::String>("RpcClientEvent").ToLocalChecked(),
+        Nan::New<v8::String>(RPC_CLIENT_EVENT_NAME).ToLocalChecked());
+
+    Nan::Set(
+        target,
+        Nan::New<v8::String>("constants").ToLocalChecked(),
+        constants);
 
     v8::Local<v8::FunctionTemplate> tpl = Nan::New<v8::FunctionTemplate>(New);
     tpl->SetClassName(Nan::New("RpcHandler").ToLocalChecked());
     tpl->InstanceTemplate()->SetInternalFieldCount(1);
 
+    Nan::SetPrototypeMethod(tpl, "emitData", EmitData);
+    Nan::SetPrototypeMethod(tpl, "getData", GetData);
     Nan::SetPrototypeMethod(tpl, "getStatus", GetStatus);
-    Nan::SetPrototypeMethod(tpl, "callRemoteMethod", CallRemoteMethod);
+    Nan::SetPrototypeMethod(tpl, "emitRpcCall", EmitRpcCall);
 
     constructor.Reset(Nan::GetFunction(tpl).ToLocalChecked());
     target->Set(
         Nan::New("RpcHandler").ToLocalChecked(),
         Nan::GetFunction(tpl).ToLocalChecked());
+
+    // Create the consturctor for the RpcChannel Objects
+    v8::Local<v8::FunctionTemplate> channelTpl = Nan::New<v8::FunctionTemplate>(RpcChannelWrap<DataSegmentMessage>::New);
+    channelTpl->SetClassName(Nan::New("RpcChannel").ToLocalChecked());
+    channelTpl->InstanceTemplate()->SetInternalFieldCount(1);
+    Nan::SetPrototypeMethod(channelTpl, "next", RpcChannelShared<DataSegmentMessage>::Next);
+    Nan::SetPrototypeMethod(channelTpl, "onMessage", RpcChannelShared<DataSegmentMessage>::OnMessage);
+    RpcHandler::RpcChannelConstructor.Reset(Nan::GetFunction(channelTpl).ToLocalChecked());
+
+    // Create the constructor for the RpcRemoteMethodCall channel
+    v8::Local<v8::FunctionTemplate> remoteMethodTpl = Nan::New<v8::FunctionTemplate>(RpcChannelWrap<RpcRemoteMethodCall>::New);
+    remoteMethodTpl->SetClassName(Nan::New("RpcRemoteMethodChannel").ToLocalChecked());
+    remoteMethodTpl->InstanceTemplate()->SetInternalFieldCount(1);
+    Nan::SetPrototypeMethod(remoteMethodTpl, "onMessage", RpcChannelShared<RpcRemoteMethodCall>::OnMessage);
+}
+
+template<>
+std::shared_ptr<RpcChannel<DataSegmentMessage>> RpcChannelWrap<DataSegmentMessage>::GetChannel(v8::Local<v8::Object> rpcObj, Nan::NAN_METHOD_ARGS_TYPE info){
+    auto channelIdObj = info[1];
+    
+    if(!channelIdObj->IsString()){
+        throw RpcError("'RpcChannel' needs a channel id to be created");
+    }
+    RpcHandler* rpc = Nan::ObjectWrap::Unwrap<RpcHandler>(rpcObj);
+    auto channelId = utils::getString(channelIdObj->ToString());    
+    
+    return rpc->DataChannels()->UseChannel(channelId);
+}
+
+template<>
+std::shared_ptr<RpcChannel<RpcRemoteMethodCall>> RpcChannelWrap<RpcRemoteMethodCall>::GetChannel(v8::Local<v8::Object> rpcObj, Nan::NAN_METHOD_ARGS_TYPE info){
+    RpcHandler* rpc = Nan::ObjectWrap::Unwrap<RpcHandler>(rpcObj);    
+    return rpc->RemoteMethodCalls();
 }
