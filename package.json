@@ -1,0 +1,11 @@
+{
+  "name": "electron-full-rpc",
+  "version": "1.0.0",
+  "description": "RPC calls for the various electron processes plus support for threads in the main process.",
+  "main": "dist/index.js",
+  "author": "Turning Data Into Products A.S.",
+  "license": "BSD-3-Clause",
+  "dependencies": {
+    "nan": "^2.7.0"
+  }
+}
